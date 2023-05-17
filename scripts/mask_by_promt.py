@@ -8,11 +8,6 @@ import os
 sys.path.append("..")
 from segment_anything import sam_model_registry, SamPredictor
 
-# TODO: Clean up, add comments and documentation
-# TODO: Save Mask as something else than jpg
-# TODO: Add Option to dilate and erode mask for better  edges (cv2.dilate, cv2.erode)
-# TODO: 
-
 class MaskByPromt():
     def __init__(self, image_dir:str, save_folder:str) -> None:
         self.image_dir = image_dir
@@ -228,6 +223,8 @@ class MaskByPromt():
                 cnt = contours[0]
                 x,y,w,h = cv2.boundingRect(cnt)
                 self.bbox = (x,y,w,h)
+                # TODO: Add bounding box to promt
+                # TODO: Add saving bounding box data to file + add classification by hand
                 
 
         elif key == ord('s'): # Save promt
@@ -267,8 +264,6 @@ class MaskByPromt():
 
         cv2.imshow("image", self.image_to_show)
         while True:
-           
-            
             key = cv2.waitKey(0)
             
             should_quit = self.proccess_key(key)
