@@ -1,3 +1,6 @@
+# My additions
+Added mask by prompt for a single object in camera
+
 # Segment Anything
 
 **[Meta AI Research, FAIR](https://ai.facebook.com/research/)**

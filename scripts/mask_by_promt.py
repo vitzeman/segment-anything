@@ -4,9 +4,11 @@ import matplotlib.pyplot as plt
 import cv2
 import sys
 import os
+import argparse
 
 sys.path.append("..")
 from segment_anything import sam_model_registry, SamPredictor
+# TODO: Add parsing of arguments
 
 class MaskByPromt():
     def __init__(self, image_dir:str, save_folder:str) -> None:
@@ -22,10 +24,11 @@ class MaskByPromt():
         print(f"[INFO]: Saving folder is {self.save_folder}")
 
         
-        self.images = os.listdir(self.image_dir)
+        self.images = sorted(os.listdir(self.image_dir))
         self.max_images = len(self.images)
         self.promt_points = []
         self.labels = []
+        self.input_box = None
         self.current_image_idx = 0
         self.change_image = True
         self.image = None
@@ -96,13 +99,19 @@ class MaskByPromt():
         if self.binary_mask is None:
                 print("[INFO]: No mask to save, NOT SAVING")
         else:
-            print(f"Saving promt {self.images[self.current_image_idx]}")
+            # print(f"Saving promt {self.images[self.current_image_idx]}")
             promt_path = os.path.join(self.save_folder_imgs, self.images[self.current_image_idx])
             cv2.imwrite(promt_path, self.image)
             mask_path = os.path.join(self.save_folder_masks, self.images[self.current_image_idx].split(".")[0]+".png")
             cv2.imwrite(mask_path, self.binary_mask*255)
             cutout_path = os.path.join(self.save_folder_cutouts, self.images[self.current_image_idx])
             cutout = cv2.bitwise_and(self.image, self.image, mask=self.binary_mask)
+            for label, point in zip(self.labels, self.promt_points):
+                if label == 0:
+                    color = (0,0,255)
+                else:
+                    color = (0,255,0)
+                cv2.circle(cutout, tuple(point), 10, color, -1)
             cv2.imwrite(cutout_path, cutout)
 
     def next_image(self):
@@ -118,6 +127,50 @@ class MaskByPromt():
             print("[INFO]: First image")
             self.current_image_idx = 0
         self.load_image()
+
+    def postprocess_mask(self):
+        self.binary_mask = cv2.dilate(self.binary_mask, None, iterations=3)
+        self.binary_mask = cv2.erode(self.binary_mask, None, iterations=3)
+
+    def mask_image(self):
+        self.sam_predictor.set_image(self.image)
+        if self.input_box is not None:
+            
+            mask, scores, logits = self.sam_predictor.predict(
+                point_coords=np.array(self.promt_points),
+                point_labels=np.array(self.labels),
+                box=np.array(self.input_box),
+                multimask_output=True,
+            )
+            mask_input = logits[np.argmax(scores), :, :]
+            masks, _, _ = self.sam_predictor.predict(
+                point_coords=np.array(self.promt_points),
+                point_labels=np.array(self.labels),
+                mask_input=mask_input[None, :, :],
+                box=np.array(self.input_box),
+                multimask_output=False,
+            )
+            cv2_mask = np.array(masks[0,:,:])
+            cv2_mask = cv2_mask.astype(np.uint8)
+            self.binary_mask = cv2_mask
+            self.postprocess_mask()
+        else:
+            mask, scores, logits = self.sam_predictor.predict(
+                point_coords=np.array(self.promt_points),
+                point_labels=np.array(self.labels),
+                multimask_output=True,
+            )
+            mask_input = logits[np.argmax(scores), :, :]
+            masks, _, _ = self.sam_predictor.predict(
+                point_coords=np.array(self.promt_points),
+                point_labels=np.array(self.labels),
+                mask_input=mask_input[None, :, :],
+                multimask_output=False,
+            )
+            cv2_mask = np.array(masks[0,:,:])
+            cv2_mask = cv2_mask.astype(np.uint8)
+            self.binary_mask = cv2_mask
+            self.postprocess_mask()
 
 
     def proccess_key(self, key:int)->bool:
@@ -254,7 +307,7 @@ class MaskByPromt():
 
         cv2.namedWindow("image", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("image", int(2048/2), int(2448/2))
-        cv2.setMouseCallback("image", self.mouse_click)
+        cv2.setMouseCallback("image", self.mouse_click) 
 
         
 
@@ -273,5 +326,10 @@ class MaskByPromt():
         cv2.destroyAllWindows()
 
 if __name__ == "__main__":
-    mask_by_promt = MaskByPromt('../../3Dreconstuct/03_sugar_box/images/', '../../3Dreconstuct/03_sugar_box_v2/')
+    # parser = argparse.ArgumentParser()
+    
+
+    mask_by_promt = MaskByPromt('../../3Dreconstuct/02_cracker_box/images', '../../3Dreconstuct/02_cracker_box_mask_hand/')
+    mask_by_promt.current_image_idx = 216
+    #SUGAR skončil jsem u 206 205 hotová
     mask_by_promt.mask_by_promt()
