@@ -16,11 +16,31 @@ from segment_anything import sam_model_registry, SamPredictor
 # TODO: get it working from directory with images
 # TODO: Save annotations of the bounding boxes
 # TODO: Maybe try to select the new mask by comparing the old one and the new one
+LABELS = {
+    1: "d01_controller",
+    2: "d02_servo",
+    3: "d03_main",
+    4: "d04_motor",
+    5: "d05_axle_front",
+    6: "d06_battery",
+    7: "d07_axle_rear",
+    8: "d08_chassis",
+}
+ASCII_NUM_SHIFT = 48
+LABELS_NUMS_KEY = [x + ASCII_NUM_SHIFT for x in LABELS.keys()]
+
+MODELS_CHECKPOINTS = {
+    "vit_h": "segment_anything/checkpoints/sam_vit_h_4b8939.pth",
+    "vit_b": "segment_anything/checkpoints/sam_vit_b_01ec64.pth",
+    "vit_l": "segment_anything/checkpoints/sam_vit_l_0b3195.pth",
+}
 
 
 def init_sam():
     sam_checkpoint = "segment_anything/checkpoints/sam_vit_h_4b8939.pth"
     model_type = "vit_h"
+
+    sam_checkpoint = MODELS_CHECKPOINTS[model_type]
 
     device = "cuda"
     sam = sam_model_registry[model_type](checkpoint=sam_checkpoint)
@@ -294,16 +314,16 @@ def track_and_cut(
     vidcap.release()
     cv2.destroyAllWindows()
     # Save video
-    # height, width, layers = new_frames[0].shape
-    # size = (width, height)
-    # fps = 30
-    # os.makedirs("data/" + item + "/videos/", exist_ok=True)
-    # out = cv2.VideoWriter(
-    #     "data/" + item + "/videos/" + item + "_bbox.mp4",
-    #     cv2.VideoWriter_fourcc(*"mp4v"),
-    #     fps,
-    #     size,
-    # )
+    height, width, layers = new_frames[0].shape
+    size = (width, height)
+    fps = 30
+    os.makedirs("data/" + item + "/videos/", exist_ok=True)
+    out = cv2.VideoWriter(
+        "data/" + item + "/videos/" + item + "_bbox.mp4",
+        cv2.VideoWriter_fourcc(*"mp4v"),
+        fps,
+        size,
+    )
 
     new_frames = []
     for file in tqdm(
@@ -332,6 +352,172 @@ def track_and_cut(
         out.write(frame)
 
     out.release()
+
+
+class Tracker:
+    def __init__(self) -> None:
+        self.sam = init_sam()
+        self.bbox = None
+        self.frame_num = 0
+        self.start_frame = 0
+        self.stop_frame = None
+
+        self.init_bbox = None
+        self.item = None
+        self.frame = None
+
+    def set_frame(self, frame: np.ndarray) -> None:
+        self.frame = frame
+
+    def set_frame_num(self, frame_num: int) -> None:
+        self.frame_num = frame_num
+
+    def extract_coordinates(self, event, x, y, flags, param):
+        if event == cv2.EVENT_LBUTTONDOWN:
+            self.init_bbox = [x, y]
+        elif event == cv2.EVENT_LBUTTONUP:
+            self.init_bbox.extend([x, y])
+            self.bbox = np.array(self.init_bbox)
+
+    def set_bbox(self) -> None:
+        cv2.namedWindow("input_bbox", cv2.WINDOW_NORMAL)
+        cv2.setMouseCallback("input_bbox", self.extract_coordinates)
+
+        while True:
+            frame2show = self.frame.copy()
+            key = cv2.waitKey(1)
+            if key == 13:
+                break
+            elif key in LABELS_NUMS_KEY:
+                self.item = LABELS[key - ASCII_NUM_SHIFT]
+
+            if self.item:
+                cv2.putText(
+                    frame2show,
+                    f"Selected: {self.item}",
+                    (10, 50),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    1,
+                    (255, 255, 255),
+                    2,
+                    cv2.LINE_AA,
+                )
+            if self.bbox:
+                cv2.rectangle(
+                    frame2show,
+                    tuple(self.bbox[:2]),
+                    tuple(self.bbox[2:]),
+                    (0, 255, 0),
+                    2,
+                )
+                if self.item:
+                    cv2.putText(
+                        frame2show,
+                        f"Selected: {self.item}",
+                        tuple(self.bbox[:2]),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        1,
+                        (255, 255, 255),
+                        2,
+                        cv2.LINE_AA,
+                    )
+            cv2.imshow("input_bbox", frame2show)
+
+        cv2.destroyAllWindows()
+        print(f"[INFO]: Selected bbox: {self.bbox}")
+
+    def get_next_frame_images(self) -> np.ndarray:
+        if self.frame_num == 0 or self.frame_num == self.start_frame:
+            self.images = sorted(os.listdir("data/" + self.item + "/images/"))
+            self.num_of_frames = len(self.images)
+
+        frame = cv2.imread(
+            "data/" + self.item + "/images/" + self.images[self.frame_num]
+        )
+        self.frame_num += 1
+
+        return frame
+
+    def get_next_frame_video(self) -> np.ndarray:
+        if self.frame_num == 0 or self.frame_num == self.start_frame:
+            self.vidcap = cv2.VideoCapture(self.path2video)
+            self.num_of_frames = int(self.vidcap.get(cv2.CAP_PROP_FRAME_COUNT))
+
+        ret, frame = self.vidcap.read()
+
+        if ret:
+            self.frame_num += 1
+            return frame
+
+    def track(self, type: str = "images") -> np.ndarray:
+        if type == "images":
+            get_next_frame = self.get_next_frame_images
+
+        elif type == "video":
+            get_next_frame = self.get_next_frame_video
+
+        # TODO:Replace
+        camera_dict = json.load(open(args.camera_dict, "r"))
+        mtx = np.array(camera_dict["camera_matrix"])
+        dist = np.array(camera_dict["distortion_coefficients"])
+        h = camera_dict["height"]
+        w = camera_dict["width"]
+        newcameramtx, roi = cv2.getOptimalNewCameraMatrix(mtx, dist, (w, h), 1, (w, h))
+        x, y, w, h = roi
+        camera_data = {
+            "K": newcameramtx.tolist(),
+            "resolution_format": "height_width for some reason",
+            "resolution": [h, w],
+        }
+
+        with open("data/" + self.item + "/camera_data.json", "w") as f:
+            json.dump(camera_data, f, indent=2)
+
+        frames = []
+        while True:
+            frame = get_next_frame()
+
+            frame = cv2.undistort(frame, mtx, dist, None, newcameramtx)
+            frame = frame[y : y + h, x : x + w]
+
+            frames.append(frame)
+            self.sam.set_image(frame)
+            mask, scores, logits = self.sam.predict(
+                point_coords=None,
+                point_labels=None,
+                box=np.array(self.bbox),
+                multimask_output=False,
+            )
+            eroded_mask = erode_mask(mask)
+            new_bbox = get_bbox_from_mask(eroded_mask)
+
+            bbox_expanded = expand_bbox(new_bbox, 1.1, frame.shape[:2])
+            frame_name = "img_" + str(self.frame_num).zfill(4)
+
+            new_label = {"label": self.item, "bbox_modal": bbox_expanded}
+
+            json_path = "data/" + self.scene + "/inputs/" + frame_name + ".json"
+            if os.path.exists(json_path):
+                with open(json_path, "r") as f:
+                    new_label = json.load(f)
+                new_label.append(new_label)
+
+                with open(json_path, "w") as f:
+                    json.dump(new_label, f, indent=2)
+
+            else:
+                with open(json_path, "w") as f:
+                    json.dump([new_label], f, indent=2)
+
+        output_video = cv2.VideoWriter(
+            "data/" + self.item + "/videos/" + self.item + "_bbox.mp4",
+            cv2.VideoWriter_fourcc(*"mp4v"),
+            fps,
+            size,
+        )
+
+        for frame in tqdm(frames):
+            output_video.write(frame)
 
 
 if __name__ == "__main__":
